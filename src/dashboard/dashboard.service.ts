@@ -3,18 +3,35 @@ import { pool } from '../db';
 
 @Injectable()
 export class DashboardService {
-    // GET /api/dashboard/summary → semua angka untuk kartu statistik dashboard
     async getSummary() {
-        const [visits, guests, rsvps, envelopes, recentRsvp] = await Promise.all([
-            pool.query(`SELECT COALESCE(SUM(visits), 0) AS total FROM invitations`),
-            pool.query(`SELECT COUNT(*) AS total FROM guests`),
-            pool.query(`SELECT COUNT(*) AS total FROM rsvps`),
-            pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM digital_envelopes`),
-            pool.query(
-                `SELECT name, attendance_status, created_at
-         FROM rsvps ORDER BY created_at DESC LIMIT 5`,
-            ),
-        ]);
+        // ✅ Total kunjungan = jumlah visits semua undangan
+        const visits = await pool.query(
+            `SELECT COALESCE(SUM(visits), 0) AS total FROM invitations`,
+        );
+
+        // ✅ Total tamu
+        const guests = await pool.query(
+            `SELECT COUNT(*) AS total FROM guests`,
+        );
+
+        // ✅ Total RSVP masuk
+        const rsvps = await pool.query(
+            `SELECT COUNT(*) AS total FROM rsvps`,
+        );
+
+        // ✅ Total nominal amplop digital
+        const envelopes = await pool.query(
+            `SELECT COALESCE(SUM(amount), 0) AS total FROM digital_envelopes`,
+        );
+
+        // ✅ 5 RSVP terbaru (join ke invitations untuk nama pasangan)
+        const recentRsvps = await pool.query(
+            `SELECT r.name, r.message, r.attendance_status, r.created_at, i.couple_name
+       FROM rsvps r
+       LEFT JOIN invitations i ON r.invitation_id = i.id
+       ORDER BY r.created_at DESC
+       LIMIT 5`,
+        );
 
         return {
             success: true,
@@ -23,7 +40,7 @@ export class DashboardService {
                 totalGuests: Number(guests.rows[0].total),
                 totalRsvp: Number(rsvps.rows[0].total),
                 totalEnvelope: Number(envelopes.rows[0].total),
-                rsvpRecent: recentRsvp.rows,
+                recentRsvps: recentRsvps.rows,
             },
         };
     }

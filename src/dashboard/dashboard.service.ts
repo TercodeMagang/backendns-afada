@@ -1,47 +1,55 @@
 import { Injectable } from '@nestjs/common';
 import { pool } from '../db';
 
+// ✅ Daftar role yang dianggap admin (sama seperti modul lain)
+const ADMIN_ROLES = ['admin utama', 'admin', 'editor', 'marketing', 'viewer'];
+
 @Injectable()
 export class DashboardService {
-    async getSummary() {
-        // ✅ Total kunjungan = jumlah visits semua undangan
-        const visits = await pool.query(
-            `SELECT COALESCE(SUM(visits), 0) AS total FROM invitations`,
-        );
+    private async isAdmin(id: number): Promise<boolean> {
+        const r = await pool.query('SELECT role FROM users WHERE id = $1', [id]);
+        const role = r.rows[0]?.role ?? 'Pengguna';
+        return ADMIN_ROLES.includes(String(role).toLowerCase());
+    }
 
-        // ✅ Total tamu
-        const guests = await pool.query(
-            `SELECT COUNT(*) AS total FROM guests`,
-        );
+    async getSummary(requesterId?: number) {
+        try {
+            const filterByUser = !!requesterId && !(await this.isAdmin(requesterId));
+            const scope = filterByUser ? 'user_id = $1' : 'TRUE';
+            const scopeParams: any[] = filterByUser ? [requesterId] : [];
 
-        // ✅ Total RSVP masuk
-        const rsvps = await pool.query(
-            `SELECT COUNT(*) AS total FROM rsvps`,
-        );
+            // Total kunjungan dari undangan dalam cakupan
+            const vis = await pool.query(`SELECT COALESCE(SUM(visits), 0) AS total FROM invitations WHERE ${scope}`, scopeParams);
+            const invIds = await pool.query(`SELECT id FROM invitations WHERE ${scope}`, scopeParams);
+            const ids: number[] = invIds.rows.map(r => r.id);
 
-        // ✅ Total nominal amplop digital
-        const envelopes = await pool.query(
-            `SELECT COALESCE(SUM(amount), 0) AS total FROM digital_envelopes`,
-        );
+            let totalGuests = 0, totalRsvp = 0, totalEnvelope = 0, recentRsvps: any[] = [];
+            if (!filterByUser) {
+                // Admin / tanpa peminta: hitung semua (termasuk data yatim)
+                totalGuests = (await pool.query(`SELECT COUNT(*)::int AS c FROM guests`)).rows[0]?.c ?? 0;
+                totalRsvp = (await pool.query(`SELECT COUNT(*)::int AS c FROM rsvps`)).rows[0]?.c ?? 0;
+                totalEnvelope = Number((await pool.query(`SELECT COALESCE(SUM(amount), 0) AS s FROM digital_envelopes`)).rows[0]?.s ?? 0);
+                recentRsvps = (await pool.query(`SELECT * FROM rsvps ORDER BY created_at DESC LIMIT 5`)).rows;
+            } else if (ids.length > 0) {
+                totalGuests = (await pool.query(`SELECT COUNT(*)::int AS c FROM guests WHERE invitation_id = ANY($1::int[]) OR user_id = $2`, [ids, requesterId])).rows[0]?.c ?? 0;
+                totalRsvp = (await pool.query(`SELECT COUNT(*)::int AS c FROM rsvps WHERE invitation_id = ANY($1::int[])`, [ids])).rows[0]?.c ?? 0;
+                totalEnvelope = Number((await pool.query(`SELECT COALESCE(SUM(amount), 0) AS s FROM digital_envelopes WHERE invitation_id = ANY($1::int[])`, [ids])).rows[0]?.s ?? 0);
+                recentRsvps = (await pool.query(`SELECT * FROM rsvps WHERE invitation_id = ANY($1::int[]) ORDER BY created_at DESC LIMIT 5`, [ids])).rows;
+            }
 
-        // ✅ 5 RSVP terbaru (join ke invitations untuk nama pasangan)
-        const recentRsvps = await pool.query(
-            `SELECT r.name, r.message, r.attendance_status, r.created_at, i.couple_name
-       FROM rsvps r
-       LEFT JOIN invitations i ON r.invitation_id = i.id
-       ORDER BY r.created_at DESC
-       LIMIT 5`,
-        );
-
-        return {
-            success: true,
-            data: {
-                totalVisits: Number(visits.rows[0].total),
-                totalGuests: Number(guests.rows[0].total),
-                totalRsvp: Number(rsvps.rows[0].total),
-                totalEnvelope: Number(envelopes.rows[0].total),
-                recentRsvps: recentRsvps.rows,
-            },
-        };
+            return {
+                success: true,
+                data: {
+                    totalVisits: Number(vis.rows[0]?.total ?? 0),
+                    totalGuests,
+                    totalRsvp,
+                    totalEnvelope,
+                    recentRsvps,
+                },
+            };
+        } catch (error) {
+            console.error('Error fetching summary:', error);
+            return { success: false, message: 'Error fetching summary' };
+        }
     }
 }

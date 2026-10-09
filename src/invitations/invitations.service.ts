@@ -4,6 +4,7 @@ import { pool } from '../db';
 // Helper: map kolom snake_case di DB → camelCase untuk frontend
 const mapRow = (row: any) => ({
     id: row.id,
+    userId: row.user_id,
     coupleName: row.couple_name,
     theme: row.theme,
     status: row.status,
@@ -12,12 +13,36 @@ const mapRow = (row: any) => ({
     settings: row.settings ?? null,
 });
 
+// ✅ Daftar role yang dianggap admin (sama seperti daftar di dashboard)
+const ADMIN_ROLES = ['admin utama', 'admin', 'editor', 'marketing', 'viewer'];
+
 @Injectable()
 export class InvitationsService {
-    // GET /api/invitations
-    async findAll() {
+    // ✅ Helper: ambil role user dari tabel users
+    private async getUserRole(id: number): Promise<string> {
+        const r = await pool.query('SELECT role FROM users WHERE id = $1', [id]);
+        return r.rows[0]?.role ?? 'Pengguna';
+    }
+
+    // ✅ Helper: apakah role ini termasuk admin?
+    private isAdminRole(role: string): boolean {
+        return ADMIN_ROLES.includes((role || '').toLowerCase());
+    }
+
+    // GET /api/invitations (?user_id=X → non-admin hanya melihat miliknya)
+    async findAll(requesterId?: number) {
         try {
-            const result = await pool.query('SELECT * FROM invitations ORDER BY id');
+            let sql = 'SELECT * FROM invitations';
+            const params: any[] = [];
+            if (requesterId) {
+                const role = await this.getUserRole(requesterId);
+                if (!this.isAdminRole(role)) {
+                    sql += ' WHERE user_id = $1';
+                    params.push(requesterId);
+                }
+            }
+            sql += ' ORDER BY id';
+            const result = await pool.query(sql, params);
             return { success: true, data: result.rows.map(mapRow) };
         } catch (error) {
             console.error('Error fetching invitations:', error);
@@ -40,13 +65,13 @@ export class InvitationsService {
         }
     }
 
-    // POST /api/invitations
-    async create(body: { coupleName: string; theme?: string; status?: string; visits?: number; settings?: any }) {
+    // POST /api/invitations (sekalian menyimpan user_id pemilik)
+    async create(body: { coupleName: string; theme?: string; status?: string; visits?: number; settings?: any; user_id?: number }) {
         try {
-            const { coupleName, theme, status, visits, settings } = body;
+            const { coupleName, theme, status, visits, settings, user_id } = body;
             const result = await pool.query(
-                'INSERT INTO invitations (couple_name, theme, status, visits, settings) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-                [coupleName, theme || 'Elegant', status || 'Draft', visits || 0, settings ? JSON.stringify(settings) : null],
+                'INSERT INTO invitations (couple_name, theme, status, visits, settings, user_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+                [coupleName, theme || 'Elegant', status || 'Draft', visits || 0, settings ? JSON.stringify(settings) : null, user_id ?? null],
             );
             return { success: true, message: 'Undangan berhasil dibuat', data: mapRow(result.rows[0]) };
         } catch (error) {
@@ -87,5 +112,15 @@ export class InvitationsService {
             console.error('Error deleting invitation:', error);
             throw new HttpException({ success: false, message: 'Error deleting invitation' }, HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    // ✅ BARU: naikkan kolom visits sebanyak 1 (aman kalau visits masih null)
+    async incrementVisit(id: number) {
+        const res = await pool.query(
+            `UPDATE invitations SET visits = COALESCE(visits, 0) + 1 WHERE id = $1 RETURNING visits`,
+            [id],
+        );
+        if (res.rows.length === 0) return { success: false, message: 'Undangan tidak ditemukan' };
+        return { success: true, visits: res.rows[0].visits };
     }
 }

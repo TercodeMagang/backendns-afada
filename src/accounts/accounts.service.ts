@@ -34,6 +34,11 @@ export class AccountsService {
         return { success: true, data: res.rows[0] };
     }
     async deleteUser(id: number) {
+        // ✅ CASCADE SOPAN: lepaskan tangan anak-anak dulu supaya FK tidak menolak
+        await pool.query('UPDATE invitations SET user_id = NULL WHERE user_id = $1', [id]);
+        await pool.query('UPDATE transactions SET user_id = NULL WHERE user_id = $1', [id]);
+        await pool.query('UPDATE guests SET user_id = NULL WHERE user_id = $1', [id]);
+        await pool.query('DELETE FROM notifications WHERE user_id = $1', [id]);
         const res = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
         if (res.rows.length === 0) throw new NotFoundException('User tidak ditemukan');
         return { success: true };
